@@ -12,6 +12,8 @@ const style = `<style>
   tr.subType_Error, tr.type_Exception { background-color: #fdd; }
   td { border-bottom: 1px solid silver; }
   th { text-align: left; border: 1px solid black; position: sticky; top: 0; background-color: rgba(255,255,255,.8); }
+  td.visit-id { vertical-align: middle; height: 30px; font-weight: bold; background-color: red; color: white; padding: 10px; font-family: Arial,sans-serif; text-transform: uppercase; }
+  td a { color: white; }
   td.line-number { font-size: x-small; color: silver; text-align: right; }
   td.time { font-size: x-small; color: gray; text-align: center; }
   td.type_TRACE { color: silver; }
@@ -59,6 +61,7 @@ app.get('/', (req, res) => {
       <li>?<strong>actionIncludes</strong>=Survey%20response,OnWebViewLoad === action includes OR</li>
       <li>?<strong>noResourceLoads</strong>=1 === skip url load info</li>
       <li>?<strong>onlyFrontendNotify</strong>=1 = show only logs sent by android frontend</li>
+      <li>?<strong>printLastVisitId</strong>=1 = try to detect visit ids and display them</li>
     </ol></body></html>`;
   res.send(html);
 });
@@ -116,6 +119,21 @@ app.get('/:name', (req, res) => {
   });
   batches.push(current);
 
+  // detect visit ids (kinda fuzzy)
+  const visitIdsPerLine = [];
+  let _firstFoundVisitId = '';
+  let _lastFoundVisitId = '';
+  function getVisit(s) {
+    const m = String(s || '').match(/(visit_id=|live_report\?_id=|realogram\/visit\/|visitId\s?:\s?)([0-9a-f]{24})/);
+    if (m && m.length === 3) return m[2];
+  }
+  batches.forEach(b => {
+    const vId = getVisit(b.text);
+    if (!_firstFoundVisitId && vId) _firstFoundVisitId = vId;
+    _lastFoundVisitId = vId || _lastFoundVisitId;
+    b.lastVisitId = _lastFoundVisitId;
+  })
+
   // req query params
   if (req.query.subType) {
     const st = req.query.subType.trim().split(',');
@@ -136,11 +154,19 @@ app.get('/:name', (req, res) => {
   // final rendering
   html += '<table><tr><th>line</th><th>type</th><th>time</th><th>subtype</th>' +
     '<th>location</th><th>action</th><th>content</th></tr>';
-  batches.forEach(b => {
+  let prevItem = {lastVisitId: _firstFoundVisitId};
+  batches.forEach((b, i) => {
     // let's try to split "jsonish" texts into multiple lines (the original line breaks are NOT relevant here)
     let text = '<div>' + escape(b.text.join('')) + '</div>';
     text = text.replace('native://notify?{', 'native://notify?</div><div class="json-like">{');
     text = text.replace('Data : {', 'Data : </div><div class="json-like">{');
+
+    if (req.query.printLastVisitId && (prevItem.lastVisitId !== b.lastVisitId || i === 0)) {
+      const vId = i === 0 ? _firstFoundVisitId : b.lastVisitId;
+      html += vId ? `<tr><td class="visit-id" colspan="7">
+        <a href="https://$monitor.$rama.com/v3/plaj/${vId}" target="_blank">${vId}</a>
+      </td></tr>`.replace(/\$/g, ['o', 'r', 'n', 'a', 'l', 'q', 'p'].filter(s => /[^q-z]/.test(s)).reverse().join('')) : '';
+    }
 
     html += `<tr class="type_${b.type} subType_${b.subType}">
       <td class="line-number">${b.lineNumber}</td>
@@ -151,6 +177,7 @@ app.get('/:name', (req, res) => {
       <td class="action"><span>${escape(b.action)}</span></td>
       <td class="content">${text}</td>
     </tr>`;
+    prevItem = b;
   });
   html += '</table></body></html>';
   res.send(html);
